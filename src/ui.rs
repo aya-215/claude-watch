@@ -15,13 +15,19 @@ use ratatui::{
 use std::io;
 use std::time::{Duration, Instant};
 
-use crate::session::Session;
+use crate::session::{enrich_sessions_with_index, filter_active_sessions, load_sessions, Session};
+
+fn load_and_filter_sessions() -> Result<Vec<Session>> {
+    let all_sessions = load_sessions()?;
+    let mut sessions = filter_active_sessions(all_sessions)?;
+    enrich_sessions_with_index(&mut sessions)?;
+    Ok(sessions)
+}
 
 pub struct App {
     sessions: Vec<Session>,
     state: ListState,
     should_quit: bool,
-    #[allow(dead_code)]
     last_update: Instant,
 }
 
@@ -40,7 +46,6 @@ impl App {
         }
     }
 
-    #[allow(dead_code)]
     pub fn update_sessions(&mut self, sessions: Vec<Session>) {
         let selected = self.state.selected();
         self.sessions = sessions;
@@ -105,11 +110,6 @@ impl App {
 
     pub fn quit(&mut self) {
         self.should_quit = true;
-    }
-
-    #[allow(dead_code)]
-    pub fn should_quit(&self) -> bool {
-        self.should_quit
     }
 }
 
@@ -272,11 +272,20 @@ fn ui(f: &mut Frame, app: &mut App) {
                 ]));
             }
 
-            // メッセージ数、Gitブランチ、最終更新時刻を表示
+            // メッセージ数、メモリ使用量、Gitブランチ、最終更新時刻を表示
             let mut meta_parts = vec![];
 
             if let Some(count) = session.message_count {
                 meta_parts.push(format!("{}msg", count));
+            }
+
+            if let Some(mem_kb) = session.memory_usage_kb {
+                let mem_mb = mem_kb / 1024;
+                if mem_mb >= 1024 {
+                    meta_parts.push(format!("{:.1}GB", mem_mb as f64 / 1024.0));
+                } else {
+                    meta_parts.push(format!("{}MB", mem_mb));
+                }
             }
 
             if let Some(ref branch) = session.git_branch {
@@ -368,11 +377,18 @@ pub fn run_tui(sessions: Vec<Session>) -> Result<Option<String>> {
             }
         }
 
-        // 1秒ごとに自動更新（TODO: Phase 2で実装）
-        // if app.last_update.elapsed() >= Duration::from_secs(1) {
-        //     let new_sessions = load_and_filter_sessions()?;
-        //     app.update_sessions(new_sessions);
-        // }
+        // 1秒ごとに自動更新
+        if app.last_update.elapsed() >= Duration::from_secs(1) {
+            match load_and_filter_sessions() {
+                Ok(new_sessions) => {
+                    app.update_sessions(new_sessions);
+                }
+                Err(_) => {
+                    // エラー時は更新をスキップ（次回リトライ）
+                    app.last_update = Instant::now();
+                }
+            }
+        }
     }
 
     // ターミナルのクリーンアップ

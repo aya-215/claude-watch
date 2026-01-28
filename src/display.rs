@@ -86,11 +86,20 @@ pub fn display_sessions(sessions: &[Session]) {
             println!("   └─ \"{}\"", truncate_text(first_prompt, 60));
         }
 
-        // メッセージ数、Gitブランチ、最終更新時刻を表示
+        // メッセージ数、メモリ使用量、Gitブランチ、最終更新時刻を表示
         let mut meta_parts = vec![];
 
         if let Some(count) = session.message_count {
             meta_parts.push(format!("{}msg", count));
+        }
+
+        if let Some(mem_kb) = session.memory_usage_kb {
+            let mem_mb = mem_kb / 1024;
+            if mem_mb >= 1024 {
+                meta_parts.push(format!("{:.1}GB", mem_mb as f64 / 1024.0));
+            } else {
+                meta_parts.push(format!("{}MB", mem_mb));
+            }
         }
 
         if let Some(ref branch) = session.git_branch {

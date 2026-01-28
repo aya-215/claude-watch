@@ -25,6 +25,8 @@ pub struct Session {
     pub git_branch: Option<String>,
     #[serde(skip)]
     pub modified: Option<String>,
+    #[serde(skip)]
+    pub memory_usage_kb: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +80,52 @@ pub fn load_sessions() -> Result<Vec<Session>> {
     }
 
     Ok(sessions)
+}
+
+/// /proc/[pid]/statusからメモリ使用量（VmRSS）を取得
+fn get_memory_from_proc(pid: u32) -> Option<u64> {
+    let status_path = format!("/proc/{}/status", pid);
+    let content = fs::read_to_string(&status_path).ok()?;
+
+    for line in content.lines() {
+        if line.starts_with("VmRSS:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                return parts[1].parse().ok();
+            }
+        }
+    }
+    None
+}
+
+/// 全ペインのpane_id → PIDマッピングを取得
+fn get_all_pane_pids() -> Result<HashMap<String, u32>> {
+    let wezterm = "/mnt/c/Program Files/WezTerm/wezterm.exe";
+    let output = Command::new(wezterm)
+        .args(["cli", "list", "--format", "json"])
+        .output()
+        .context("WezTermのペイン一覧取得に失敗")?;
+
+    if !output.status.success() {
+        return Err(anyhow::anyhow!("WezTerm cliコマンドが失敗しました"));
+    }
+
+    let json_str = String::from_utf8(output.stdout)
+        .context("WezTerm出力のUTF-8変換に失敗")?;
+
+    let panes: Vec<serde_json::Value> = serde_json::from_str(&json_str)
+        .context("WezTerm JSON解析に失敗")?;
+
+    let mut map = HashMap::new();
+    for pane in panes {
+        if let (Some(pane_id), Some(pid)) = (
+            pane["pane_id"].as_u64(),
+            pane["foreground_process_id"].as_u64(),
+        ) {
+            map.insert(pane_id.to_string(), pid as u32);
+        }
+    }
+    Ok(map)
 }
 
 fn get_active_pane_ids() -> Result<HashSet<String>> {
@@ -195,6 +243,15 @@ pub fn enrich_sessions_with_index(sessions: &mut [Session]) -> Result<()> {
                 session.git_branch = entry.git_branch.clone();
                 session.modified = entry.modified.clone();
             }
+        }
+    }
+
+    // メモリ使用量を取得
+    let pane_pids = get_all_pane_pids().unwrap_or_default();
+
+    for session in sessions.iter_mut() {
+        if let Some(&pid) = pane_pids.get(&session.pane_id) {
+            session.memory_usage_kb = get_memory_from_proc(pid);
         }
     }
 
