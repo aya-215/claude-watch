@@ -19,6 +19,12 @@ pub struct Session {
     pub summary: Option<String>,
     #[serde(skip)]
     pub first_prompt: Option<String>,
+    #[serde(skip)]
+    pub message_count: Option<u32>,
+    #[serde(skip)]
+    pub git_branch: Option<String>,
+    #[serde(skip)]
+    pub modified: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -33,6 +39,11 @@ struct SessionIndexEntry {
     summary: Option<String>,
     #[serde(rename = "firstPrompt")]
     first_prompt: Option<String>,
+    #[serde(rename = "messageCount")]
+    message_count: Option<u32>,
+    #[serde(rename = "gitBranch")]
+    git_branch: Option<String>,
+    modified: Option<String>,
     #[allow(dead_code)]
     #[serde(rename = "projectPath")]
     project_path: Option<String>,
@@ -174,12 +185,15 @@ pub fn enrich_sessions_with_index(sessions: &mut [Session]) -> Result<()> {
         }
     }
 
-    // 各セッションにsummaryとfirst_promptを追加
+    // 各セッションにsummary、first_prompt、その他の情報を追加
     for session in sessions.iter_mut() {
         if let Some(index) = cwd_to_index.get(&session.cwd) {
             if let Some(entry) = index.get(&session.session_id) {
                 session.summary = entry.summary.clone();
                 session.first_prompt = entry.first_prompt.clone();
+                session.message_count = entry.message_count;
+                session.git_branch = entry.git_branch.clone();
+                session.modified = entry.modified.clone();
             }
         }
     }

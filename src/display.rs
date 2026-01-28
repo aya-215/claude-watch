@@ -36,6 +36,31 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn format_relative_time(timestamp_str: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let modified_ts = parsed.timestamp();
+        let diff = now - modified_ts;
+
+        if diff < 60 {
+            return "たった今".to_string();
+        } else if diff < 3600 {
+            return format!("{}分前", diff / 60);
+        } else if diff < 86400 {
+            return format!("{}時間前", diff / 3600);
+        } else {
+            return format!("{}日前", diff / 86400);
+        }
+    }
+
+    "不明".to_string()
+}
+
 pub fn display_sessions(sessions: &[Session]) {
     println!("\n📋 Claude Codeセッション一覧\n");
 
@@ -59,6 +84,25 @@ pub fn display_sessions(sessions: &[Session]) {
             println!("   └─ \"{}\"", truncate_text(summary, 60));
         } else if let Some(ref first_prompt) = session.first_prompt {
             println!("   └─ \"{}\"", truncate_text(first_prompt, 60));
+        }
+
+        // メッセージ数、Gitブランチ、最終更新時刻を表示
+        let mut meta_parts = vec![];
+
+        if let Some(count) = session.message_count {
+            meta_parts.push(format!("{}msg", count));
+        }
+
+        if let Some(ref branch) = session.git_branch {
+            meta_parts.push(format!("@{}", branch));
+        }
+
+        if let Some(ref modified) = session.modified {
+            meta_parts.push(format_relative_time(modified));
+        }
+
+        if !meta_parts.is_empty() {
+            println!("   └─ {}", meta_parts.join(" · "));
         }
 
         println!();

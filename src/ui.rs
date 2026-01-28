@@ -173,6 +173,33 @@ fn simplify_notification_message(msg: &str) -> String {
     truncate_text(msg, 40)
 }
 
+fn format_relative_time(timestamp_str: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // ISO 8601形式の時刻をパース（簡易版）
+    // 例: "2026-01-15T07:08:52.172Z"
+    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let modified_ts = parsed.timestamp();
+        let diff = now - modified_ts;
+
+        if diff < 60 {
+            return "たった今".to_string();
+        } else if diff < 3600 {
+            return format!("{}分前", diff / 60);
+        } else if diff < 86400 {
+            return format!("{}時間前", diff / 3600);
+        } else {
+            return format!("{}日前", diff / 86400);
+        }
+    }
+
+    "不明".to_string()
+}
+
 fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .constraints([
@@ -240,6 +267,31 @@ fn ui(f: &mut Frame, app: &mut App) {
                     Span::raw("   └─ "),
                     Span::styled(
                         format!("\"{}\"", truncate_text(first_prompt, 50)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+
+            // メッセージ数、Gitブランチ、最終更新時刻を表示
+            let mut meta_parts = vec![];
+
+            if let Some(count) = session.message_count {
+                meta_parts.push(format!("{}msg", count));
+            }
+
+            if let Some(ref branch) = session.git_branch {
+                meta_parts.push(format!("@{}", branch));
+            }
+
+            if let Some(ref modified) = session.modified {
+                meta_parts.push(format_relative_time(modified));
+            }
+
+            if !meta_parts.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::raw("   └─ "),
+                    Span::styled(
+                        meta_parts.join(" · "),
                         Style::default().fg(Color::DarkGray),
                     ),
                 ]));
