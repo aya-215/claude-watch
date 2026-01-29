@@ -1,6 +1,21 @@
 use crate::session::Session;
 
-fn get_status_icon(status: &str) -> &str {
+pub fn simplify_notification_message(msg: &str) -> String {
+    // "Claude needs your permission to use Bash" -> "Bash許可待ち"
+    // "Claude Code needs your approval for the plan" -> "プラン承認待ち"
+    if msg.contains("permission to use") {
+        if let Some(tool_name) = msg.split("use ").nth(1) {
+            return format!("{}許可待ち", tool_name);
+        }
+    } else if msg.contains("approval for the plan") {
+        return "プラン承認待ち".to_string();
+    }
+
+    // デフォルトは元のメッセージをそのまま返す
+    truncate_text(msg, 40)
+}
+
+pub fn get_status_icon(status: &str) -> &str {
     match status {
         "active" => "🟢",
         "waiting" => "🟡",
@@ -9,7 +24,7 @@ fn get_status_icon(status: &str) -> &str {
     }
 }
 
-fn format_cwd(cwd: &str) -> String {
+pub fn format_cwd(cwd: &str) -> String {
     if let Some(home) = std::env::var("HOME").ok() {
         cwd.replace(&home, "~")
     } else {
@@ -17,7 +32,7 @@ fn format_cwd(cwd: &str) -> String {
     }
 }
 
-fn get_status_label(status: &str) -> &str {
+pub fn get_status_label(status: &str) -> &str {
     match status {
         "active" => "実行中",
         "waiting" => "承認待ち",
@@ -26,7 +41,16 @@ fn get_status_label(status: &str) -> &str {
     }
 }
 
-fn truncate_text(text: &str, max_chars: usize) -> String {
+pub fn get_status_color(status: &str) -> ratatui::style::Color {
+    match status {
+        "active" => ratatui::style::Color::Green,
+        "waiting" => ratatui::style::Color::Yellow,
+        "stopped" => ratatui::style::Color::Gray,
+        _ => ratatui::style::Color::White,
+    }
+}
+
+pub fn truncate_text(text: &str, max_chars: usize) -> String {
     let char_count = text.chars().count();
     if char_count <= max_chars {
         text.to_string()
@@ -36,7 +60,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
-fn format_relative_time(timestamp_str: &str) -> String {
+pub fn format_relative_time(timestamp_str: &str) -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {

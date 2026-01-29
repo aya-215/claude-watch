@@ -6,7 +6,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
@@ -15,6 +15,10 @@ use ratatui::{
 use std::io;
 use std::time::{Duration, Instant};
 
+use crate::display::{
+    format_cwd, format_relative_time, get_status_color, get_status_icon, get_status_label,
+    simplify_notification_message, truncate_text,
+};
 use crate::session::{enrich_sessions_with_index, filter_active_sessions, load_sessions, Session};
 
 fn load_and_filter_sessions() -> Result<Vec<Session>> {
@@ -113,101 +117,27 @@ impl App {
     }
 }
 
-fn get_status_icon(status: &str) -> &str {
-    match status {
-        "active" => "🟢",
-        "waiting" => "🟡",
-        "stopped" => "⚪",
-        _ => "❓",
-    }
-}
-
-fn get_status_label(status: &str) -> &str {
-    match status {
-        "active" => "実行中",
-        "waiting" => "承認待ち",
-        "stopped" => "完了",
-        _ => "不明",
-    }
-}
-
-fn get_status_color(status: &str) -> Color {
-    match status {
-        "active" => Color::Green,
-        "waiting" => Color::Yellow,
-        "stopped" => Color::Gray,
-        _ => Color::White,
-    }
-}
-
-fn format_cwd(cwd: &str) -> String {
-    if let Some(home) = std::env::var("HOME").ok() {
-        cwd.replace(&home, "~")
-    } else {
-        cwd.to_string()
-    }
-}
-
-fn truncate_text(text: &str, max_chars: usize) -> String {
-    let char_count = text.chars().count();
-    if char_count <= max_chars {
-        text.to_string()
-    } else {
-        let truncated: String = text.chars().take(max_chars.saturating_sub(3)).collect();
-        format!("{}...", truncated)
-    }
-}
-
-fn simplify_notification_message(msg: &str) -> String {
-    // "Claude needs your permission to use Bash" -> "Bash許可待ち"
-    // "Claude Code needs your approval for the plan" -> "プラン承認待ち"
-    if msg.contains("permission to use") {
-        if let Some(tool_name) = msg.split("use ").nth(1) {
-            return format!("{}許可待ち", tool_name);
-        }
-    } else if msg.contains("approval for the plan") {
-        return "プラン承認待ち".to_string();
-    }
-
-    // デフォルトは元のメッセージをそのまま返す
-    truncate_text(msg, 40)
-}
-
-fn format_relative_time(timestamp_str: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    // ISO 8601形式の時刻をパース（簡易版）
-    // 例: "2026-01-15T07:08:52.172Z"
-    if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp_str) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        let modified_ts = parsed.timestamp();
-        let diff = now - modified_ts;
-
-        if diff < 60 {
-            return "たった今".to_string();
-        } else if diff < 3600 {
-            return format!("{}分前", diff / 60);
-        } else if diff < 86400 {
-            return format!("{}時間前", diff / 3600);
-        } else {
-            return format!("{}日前", diff / 86400);
-        }
-    }
-
-    "不明".to_string()
+fn format_dir_name(cwd: &str) -> &str {
+    cwd.rsplit('/').next().unwrap_or(cwd)
 }
 
 fn ui(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(3),  // ヘッダー
+            Constraint::Min(0),     // ボディ
+            Constraint::Length(1),  // フッター
         ])
         .split(f.area());
+
+    // ボディを左右に分割
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(30),  // 左ペイン
+            Constraint::Percentage(70),  // 右ペイン
+        ])
+        .split(chunks[1]);
 
     // ヘッダー
     let header = Paragraph::new("📋 Claude Code セッション監視")
@@ -215,98 +145,27 @@ fn ui(f: &mut Frame, app: &mut App) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(header, chunks[0]);
 
-    // セッション一覧
+    // 左ペイン: セッション一覧（コンパクト）
     let items: Vec<ListItem> = app
         .sessions
         .iter()
         .map(|session| {
             let icon = get_status_icon(&session.status);
             let status_label = get_status_label(&session.status);
-            let cwd = format_cwd(&session.cwd);
+            let dir_name = format_dir_name(&session.cwd);
             let color = get_status_color(&session.status);
 
-            let mut lines = vec![
-                Line::from(vec![
-                    Span::raw(format!("{} ", icon)),
-                    Span::styled(
-                        format!("{:<10}", status_label),
-                        Style::default().fg(color),
-                    ),
-                    Span::raw(format!(" {} ", cwd)),
-                    Span::styled(
-                        format!("(pane:{})", session.pane_id),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])
-            ];
+            // 1行: "{icon} {status_label} {dir_name}"
+            let line = Line::from(vec![
+                Span::raw(format!("{} ", icon)),
+                Span::styled(
+                    format!("{:<8}", status_label),
+                    Style::default().fg(color),
+                ),
+                Span::raw(format!(" {}", dir_name)),
+            ]);
 
-            // notification_messageがあれば表示
-            if let Some(ref msg) = session.notification_message {
-                // "Claude needs your permission to use Bash" -> "Bash許可待ち"
-                let simplified_msg = simplify_notification_message(msg);
-                lines.push(Line::from(vec![
-                    Span::raw("   └─ "),
-                    Span::styled(
-                        simplified_msg,
-                        Style::default().fg(Color::Yellow),
-                    ),
-                ]));
-            }
-
-            // summaryまたはfirst_promptがあれば表示
-            if let Some(ref summary) = session.summary {
-                lines.push(Line::from(vec![
-                    Span::raw("   └─ "),
-                    Span::styled(
-                        format!("\"{}\"", truncate_text(summary, 50)),
-                        Style::default().fg(Color::Cyan),
-                    ),
-                ]));
-            } else if let Some(ref first_prompt) = session.first_prompt {
-                lines.push(Line::from(vec![
-                    Span::raw("   └─ "),
-                    Span::styled(
-                        format!("\"{}\"", truncate_text(first_prompt, 50)),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-
-            // メッセージ数、メモリ使用量、Gitブランチ、最終更新時刻を表示
-            let mut meta_parts = vec![];
-
-            if let Some(count) = session.message_count {
-                meta_parts.push(format!("{}msg", count));
-            }
-
-            if let Some(mem_kb) = session.memory_usage_kb {
-                let mem_mb = mem_kb / 1024;
-                if mem_mb >= 1024 {
-                    meta_parts.push(format!("{:.1}GB", mem_mb as f64 / 1024.0));
-                } else {
-                    meta_parts.push(format!("{}MB", mem_mb));
-                }
-            }
-
-            if let Some(ref branch) = session.git_branch {
-                meta_parts.push(format!("@{}", branch));
-            }
-
-            if let Some(ref modified) = session.modified {
-                meta_parts.push(format_relative_time(modified));
-            }
-
-            if !meta_parts.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::raw("   └─ "),
-                    Span::styled(
-                        meta_parts.join(" · "),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]));
-            }
-
-            ListItem::new(lines)
+            ListItem::new(line)
         })
         .collect();
 
@@ -314,7 +173,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("セッション一覧 ({})", app.sessions.len())),
+                .title(format!("Sessions ({})", app.sessions.len())),
         )
         .highlight_style(
             Style::default()
@@ -323,7 +182,10 @@ fn ui(f: &mut Frame, app: &mut App) {
         )
         .highlight_symbol("▶ ");
 
-    f.render_stateful_widget(list, chunks[1], &mut app.state);
+    f.render_stateful_widget(list, body[0], &mut app.state);
+
+    // 右ペイン: 選択セッションの詳細
+    render_detail(f, body[1], app.selected_session());
 
     // フッター
     let footer_text = if app.sessions.is_empty() {
@@ -332,10 +194,111 @@ fn ui(f: &mut Frame, app: &mut App) {
         "↑↓: 選択 | Enter: ジャンプ | q: 終了"
     };
 
-    let footer = Paragraph::new(footer_text)
-        .style(Style::default().fg(Color::Gray))
-        .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(footer_text).style(Style::default().fg(Color::Gray));
     f.render_widget(footer, chunks[2]);
+}
+
+fn render_detail(f: &mut Frame, area: ratatui::layout::Rect, session: Option<&Session>) {
+    let Some(session) = session else {
+        let text = Paragraph::new("セッションを選択してください")
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title("Detail"));
+        f.render_widget(text, area);
+        return;
+    };
+
+    let icon = get_status_icon(&session.status);
+    let status_label = get_status_label(&session.status);
+    let color = get_status_color(&session.status);
+    let cwd = format_cwd(&session.cwd);
+
+    let mut lines = vec![];
+
+    // ステータス行
+    lines.push(Line::from(vec![
+        Span::raw(format!("{} ", icon)),
+        Span::styled(
+            status_label,
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // パス行
+    lines.push(Line::from(vec![
+        Span::raw("📁 "),
+        Span::styled(cwd, Style::default().fg(Color::White)),
+    ]));
+
+    // メタ行
+    let mut meta_parts = vec![];
+    if let Some(ref branch) = session.git_branch {
+        meta_parts.push(format!("🔀 {}", branch));
+    }
+    if let Some(count) = session.message_count {
+        meta_parts.push(format!("📨 {}msg", count));
+    }
+    if let Some(mem_kb) = session.memory_usage_kb {
+        let mem_mb = mem_kb / 1024;
+        if mem_mb >= 1024 {
+            meta_parts.push(format!("💾 {:.1}GB", mem_mb as f64 / 1024.0));
+        } else {
+            meta_parts.push(format!("💾 {}MB", mem_mb));
+        }
+    }
+    if let Some(ref modified) = session.modified {
+        meta_parts.push(format!("🕐 {}", format_relative_time(modified)));
+    }
+
+    if !meta_parts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            meta_parts.join(" · "),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    // 通知行
+    if let Some(ref msg) = session.notification_message {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::raw("⚠ "),
+            Span::styled(
+                simplify_notification_message(msg),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    // Task
+    if let Some(ref first_prompt) = session.first_prompt {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "── Task ──────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate_text(first_prompt, 100),
+            Style::default().fg(Color::Cyan),
+        )));
+    }
+
+    // Summary
+    if let Some(ref summary) = session.summary {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "── Summary ───────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(Span::styled(
+            truncate_text(summary, 150),
+            Style::default().fg(Color::White),
+        )));
+    }
+
+    let detail = Paragraph::new(lines).block(Block::default().borders(Borders::ALL).title("Detail"));
+    f.render_widget(detail, area);
 }
 
 pub fn run_tui(sessions: Vec<Session>) -> Result<Option<String>> {
